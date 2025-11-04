@@ -105,60 +105,8 @@ except Exception as e:
     logger.error(f"Failed to initialize embeddings: {e}")
     raise
 
-# LangChain-compatible wrapper for QwenVL
-class QwenVLWrapper:
-    """Wrapper to make QwenVL compatible with LangChain interface."""
-    
-    def __init__(self, model_name: str):
-        from research_llm import QwenVLLL
-        self.model = QwenVLLL(model_name=model_name)
-        logger.info(f"QwenVL wrapper initialized with model: {model_name}")
-    
-    def _extract_prompt(self, messages):
-        """Extract prompt text from various message formats."""
-        if isinstance(messages, str):
-            return messages
-        elif isinstance(messages, list):
-            # Handle list of messages
-            prompt_parts = []
-            for msg in messages:
-                if hasattr(msg, 'content'):
-                    prompt_parts.append(msg.content)
-                elif isinstance(msg, dict):
-                    prompt_parts.append(msg.get('content', ''))
-                else:
-                    prompt_parts.append(str(msg))
-            return '\n'.join(prompt_parts)
-        elif hasattr(messages, 'to_string'):
-            return messages.to_string()
-        elif hasattr(messages, 'content'):
-            return messages.content
-        else:
-            return str(messages)
-    
-    def invoke(self, messages):
-        """LangChain-compatible invoke method."""
-        prompt = self._extract_prompt(messages)
-        # Use smaller max_tokens for faster responses to simple queries
-        response = self.model.generate(prompt, max_tokens=256)
-        # Return as a string (LangChain expects strings from LLMs)
-        return str(response) if response else ""
-    
-    def stream(self, messages):
-        """LangChain-compatible stream method."""
-        prompt = self._extract_prompt(messages)
-        # Use smaller max_tokens for faster responses
-        for chunk in self.model.generate_stream(prompt, max_tokens=256):
-            # Yield strings directly (LangChain expects string chunks)
-            yield str(chunk) if chunk else ""
-    
-    def __call__(self, messages):
-        """Make the wrapper callable."""
-        return self.invoke(messages)
-
 # Initialize LLM providers
 _anthropic_llm = None
-_qwenvl_llm = None
 
 # Initialize Anthropic
 anthropic_model_name = os.getenv("ANTHROPIC_MODEL", "claude-3-haiku-20240307")
@@ -175,20 +123,6 @@ if anthropic_api_key:
 else:
     logger.warning("ANTHROPIC_API_KEY not set - Anthropic LLM not available")
 
-# Initialize QwenVL (lazy load on first use to save memory)
-def get_qwenvl():
-    """Lazy load QwenVL model."""
-    global _qwenvl_llm
-    if _qwenvl_llm is None:
-        try:
-            qwenvl_model_name = os.getenv("QWENVL_MODEL", "Qwen/Qwen2.5-VL-32B-Instruct")
-            logger.info(f"Initializing QwenVL with model: {qwenvl_model_name}")
-            _qwenvl_llm = QwenVLWrapper(qwenvl_model_name)
-            logger.info("QwenVL initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize QwenVL: {e}")
-            raise RuntimeError(f"QwenVL initialization failed: {e}")
-    return _qwenvl_llm
 
 
 class LangChainService:
@@ -231,9 +165,9 @@ class LangChainService:
         except Exception as e:
             logger.warning(f"Could not get collection count: {e}")
         
-        # Check if at least one LLM is available
+        # Check if Anthropic LLM is available
         if _anthropic_llm is None:
-            logger.warning("Anthropic LLM not initialized. QwenVL will be used if requested.")
+            logger.warning("Anthropic LLM not initialized. Please set ANTHROPIC_API_KEY in environment.")
         
         # Store retrieval chains for different providers
         self.retrieval_chains = {}
@@ -286,13 +220,8 @@ class LangChainService:
             
             return "\n\n---\n\n".join(formatted)
         
-        # Wrap QwenVL with RunnableLambda if it's not already a LangChain model
-        if isinstance(llm, QwenVLWrapper):
-            # Wrap the QwenVL wrapper with RunnableLambda to make it chain-compatible
-            llm_runnable = RunnableLambda(llm.invoke)
-        else:
-            # Use the LLM directly (e.g., ChatAnthropic already implements Runnable)
-            llm_runnable = llm
+        # Use the LLM directly (ChatAnthropic already implements Runnable)
+        llm_runnable = llm
         
         # Create RAG chain with proper error handling
         rag_chain = (
@@ -310,15 +239,12 @@ class LangChainService:
     def _get_retrieval_chain(self, provider='anthropic'):
         """Get or create retrieval chain for the specified provider."""
         if provider not in self.retrieval_chains:
-            if provider == 'qwenvl':
-                llm = get_qwenvl()
-                self.retrieval_chains['qwenvl'] = self._create_retrieval_chain(llm)
-            elif provider == 'anthropic':
+            if provider == 'anthropic':
                 if _anthropic_llm is None:
                     raise RuntimeError("Anthropic LLM not initialized")
                 self.retrieval_chains['anthropic'] = self._create_retrieval_chain(_anthropic_llm)
             else:
-                raise ValueError(f"Unknown provider: {provider}")
+                raise ValueError(f"Unknown provider: {provider}. Only 'anthropic' is supported.")
         
         return self.retrieval_chains[provider]
 
@@ -616,24 +542,18 @@ class LangChainService:
                         web_context += f"URL: {result['url']}\n"
                         web_context += f"Content: {result['snippet']}\n\n"
                 
-                if provider == 'qwenvl':
-                    llm = get_qwenvl()
-                    prompt = f"{web_context}\n\nQuestion: {question}\n\nAnswer:" if web_context else question
-                    for chunk in llm.stream(prompt):
-                        yield json.dumps({"content": chunk})
-                else:
-                    # Use Anthropic
-                    if _anthropic_llm is None:
-                        yield json.dumps({"error": "Anthropic LLM not available"})
-                        yield json.dumps({"done": True})
-                        return
-                    
-                    prompt = f"{web_context}\n\n{question}" if web_context else question
-                    for chunk in _anthropic_llm.stream(prompt):
-                        if hasattr(chunk, 'content'):
-                            yield json.dumps({"content": chunk.content})
-                        else:
-                            yield json.dumps({"content": str(chunk)})
+                # Use Anthropic
+                if _anthropic_llm is None:
+                    yield json.dumps({"error": "Anthropic LLM not available"})
+                    yield json.dumps({"done": True})
+                    return
+                
+                prompt = f"{web_context}\n\n{question}" if web_context else question
+                for chunk in _anthropic_llm.stream(prompt):
+                    if hasattr(chunk, 'content'):
+                        yield json.dumps({"content": chunk.content})
+                    else:
+                        yield json.dumps({"content": str(chunk)})
                 
                 # Send web results and indexing info
                 if web_results:
@@ -650,20 +570,15 @@ class LangChainService:
             
             if doc_count == 0:
                 # No documents indexed yet - answer without context
-                if provider == 'qwenvl':
-                    llm = get_qwenvl()
-                    for chunk in llm.stream(question):
-                        yield json.dumps({"content": chunk})
-                else:
-                    if _anthropic_llm is None:
-                        yield json.dumps({"error": "Anthropic LLM not available"})
-                        yield json.dumps({"done": True})
-                        return
-                    for chunk in _anthropic_llm.stream(question):
-                        if hasattr(chunk, 'content'):
-                            yield json.dumps({"content": chunk.content})
-                        else:
-                            yield json.dumps({"content": str(chunk)})
+                if _anthropic_llm is None:
+                    yield json.dumps({"error": "Anthropic LLM not available"})
+                    yield json.dumps({"done": True})
+                    return
+                for chunk in _anthropic_llm.stream(question):
+                    if hasattr(chunk, 'content'):
+                        yield json.dumps({"content": chunk.content})
+                    else:
+                        yield json.dumps({"content": str(chunk)})
                 
                 yield json.dumps({"sources": []})
                 yield json.dumps({"done": True})
@@ -722,17 +637,10 @@ class LangChainService:
             
             full_prompt = f"{system_prompt}\n\nHuman: {question}\n\nAssistant:"
             
-            # Handle streaming differently for QwenVL vs Anthropic
-            if provider == 'qwenvl':
-                llm = get_qwenvl()
-                # Stream directly from QwenVL
-                for chunk in llm.stream(full_prompt):
-                    yield json.dumps({"content": chunk})
-            else:
-                # Use the retrieval chain for Anthropic
-                retrieval_chain = self._get_retrieval_chain(provider)
-                for chunk in retrieval_chain.stream({"input": question}):
-                    yield json.dumps({"content": chunk})
+            # Use the retrieval chain for Anthropic
+            retrieval_chain = self._get_retrieval_chain(provider)
+            for chunk in retrieval_chain.stream({"input": question}):
+                yield json.dumps({"content": chunk})
             
             # Send sources AFTER content is complete
             if sources:
@@ -809,21 +717,16 @@ class LangChainService:
                         web_context += f"[{i}] {result['title']}\n"
                         web_context += f"URL: {result['url']}\n"
                         web_context += f"Content: {result['snippet']}\n\n"
-                if provider == 'qwenvl':
-                    llm = get_qwenvl()
-                    prompt = f"{web_context}\n\nQuestion: {question}\n\nAnswer:" if web_context else question
-                    answer = llm.invoke(prompt)
-                else:
-                    # Use Anthropic without context
-                    if _anthropic_llm is None:
-                        return {
-                            "success": False,
-                            "error": "Anthropic LLM not available",
-                            "answer": "Sorry, the LLM is not available."
-                        }
-                    prompt = f"{web_context}\n\n{question}" if web_context else question
-                    response = _anthropic_llm.invoke(prompt)
-                    answer = response.content if hasattr(response, 'content') else str(response)
+                # Use Anthropic without context
+                if _anthropic_llm is None:
+                    return {
+                        "success": False,
+                        "error": "Anthropic LLM not available",
+                        "answer": "Sorry, the LLM is not available."
+                    }
+                prompt = f"{web_context}\n\n{question}" if web_context else question
+                response = _anthropic_llm.invoke(prompt)
+                answer = response.content if hasattr(response, 'content') else str(response)
                 
                 result = {
                     "success": True,
@@ -844,18 +747,14 @@ class LangChainService:
             
             if doc_count == 0:
                 # No documents indexed yet - answer without context
-                if provider == 'qwenvl':
-                    llm = get_qwenvl()
-                    answer = llm.invoke(question)
-                else:
-                    if _anthropic_llm is None:
-                        return {
-                            "success": False,
-                            "error": "Anthropic LLM not available",
-                            "answer": "Sorry, the LLM is not available."
-                        }
-                    response = _anthropic_llm.invoke(question)
-                    answer = response.content if hasattr(response, 'content') else str(response)
+                if _anthropic_llm is None:
+                    return {
+                        "success": False,
+                        "error": "Anthropic LLM not available",
+                        "answer": "Sorry, the LLM is not available."
+                    }
+                response = _anthropic_llm.invoke(question)
+                answer = response.content if hasattr(response, 'content') else str(response)
                 
                 return {
                     "success": True,
@@ -876,53 +775,9 @@ class LangChainService:
                 for doc in docs
             ]
             
-            # Handle QwenVL differently from Anthropic
-            if provider == 'qwenvl':
-                # Format context from retrieved documents
-                def format_docs(docs):
-                    if not docs:
-                        return "No documents have been indexed yet."
-                    formatted = []
-                    for i, doc in enumerate(docs):
-                        source = doc.metadata.get('source', 'unknown')
-                        page = doc.metadata.get('page', 'unknown')
-                        formatted.append(f"[Document {i+1}] From: {source}, Page: {page}\n{doc.page_content}")
-                    return "\n\n---\n\n".join(formatted)
-                
-                context = format_docs(docs)
-                
-                # Add web search results to context if available
-                if web_results:
-                    web_context = "\n\n=== Web Search Results ===\n\n"
-                    for i, result in enumerate(web_results[:5], 1):
-                        web_context += f"[Web Result {i}] {result['title']}\n"
-                        web_context += f"URL: {result['url']}\n"
-                        web_context += f"Content: {result['snippet']}\n\n"
-                    context += web_context
-                
-                # Build the full prompt
-                system_prompt = (
-                    "You are a helpful research assistant. The user has uploaded PDF documents that are indexed. "
-                    "Below is the context retrieved from those indexed documents.\n"
-                    "\n"
-                    "CRITICAL RULES:\n"
-                    "1. The context below IS from indexed PDFs - never say 'no documents are indexed' if you see text below\n"
-                    "2. If you see document text in the context, acknowledge what PDFs ARE available\n"
-                    "3. Answer based on what's in the context, citing source and page numbers\n"
-                    "4. If the context doesn't answer the specific question, say what information IS available instead\n"
-                    "5. Only say 'no documents indexed' if the context section below is completely empty\n"
-                    "\n"
-                    f"Retrieved Context:\n{context}"
-                )
-                
-                full_prompt = f"{system_prompt}\n\nHuman: {question}\n\nAssistant:"
-                
-                llm = get_qwenvl()
-                answer = llm.invoke(full_prompt)
-            else:
-                # Use the retrieval chain for Anthropic
-                retrieval_chain = self._get_retrieval_chain(provider)
-                answer = retrieval_chain.invoke({"input": question})
+            # Use the retrieval chain for Anthropic
+            retrieval_chain = self._get_retrieval_chain(provider)
+            answer = retrieval_chain.invoke({"input": question})
             
             result = {
                 "success": True,

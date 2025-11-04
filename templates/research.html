@@ -35,7 +35,6 @@
             <!-- Model Selector -->
             <select id="modelSelector" class="model-selector">
                 <option value="anthropic">Anthropic Claude</option>
-                <option value="qwenvl">Qwen2.5-VL-32B</option>
             </select>
             
             <!-- Home Link -->
@@ -90,10 +89,11 @@
                         <input type="checkbox" id="useTrainingData" checked>
                         <span><i class="fas fa-database"></i> Training Data</span>
                     </label>
-                    <label class="option-checkbox">
+                    <!-- TEMPORARILY DISABLED: Web Search -->
+                    <!-- <label class="option-checkbox">
                         <input type="checkbox" id="useWebSearch">
                         <span><i class="fas fa-globe"></i> Web Search</span>
-                    </label>
+                    </label> -->
                     <label class="option-number">
                         <span>Top K:</span>
                         <input type="number" id="topK" value="3" min="1" max="10">
@@ -102,9 +102,10 @@
 
                 <!-- Input Wrapper -->
                 <div class="input-wrapper">
-                    <button class="attach-btn" id="attachPdfBtn" title="Upload PDF">
+                    <!-- TEMPORARILY DISABLED: PDF Upload Button -->
+                    <!-- <button class="attach-btn" id="attachPdfBtn" title="Upload PDF">
                         <i class="fas fa-file-upload"></i>
-                    </button>
+                    </button> -->
                     <button class="attach-btn" id="attachBtn" title="Attach file or image">
                         <i class="fas fa-paperclip"></i>
                     </button>

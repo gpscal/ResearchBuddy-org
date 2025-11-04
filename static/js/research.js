@@ -112,8 +112,7 @@ function initializeEventListeners() {
 
 function getModelLabel(modelId) {
     const models = {
-        'anthropic': 'Anthropic Claude',
-        'qwenvl': 'Qwen2.5-VL-32B-Instruct'
+        'anthropic': 'Anthropic Claude'
     };
     return models[modelId] || modelId;
 }
@@ -352,7 +351,8 @@ async function sendQuery() {
     const question = input.value.trim();
     if (!question || isProcessing) return;
 
-    const useWeb = document.getElementById('useWebSearch').checked;
+    const useWebSearchEl = document.getElementById('useWebSearch');
+    const useWeb = useWebSearchEl ? useWebSearchEl.checked : false; // Default to false if disabled
     const useTrainingData = document.getElementById('useTrainingData').checked;
     const topK = parseInt(document.getElementById('topK').value) || 3;
 

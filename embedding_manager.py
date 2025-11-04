@@ -1,4 +1,4 @@
-"""Enhanced embedding utilities for the research assistant with GPU optimization."""
+"""Enhanced embedding utilities for the research assistant (CPU-only)."""
 
 from __future__ import annotations
 
@@ -8,77 +8,47 @@ from functools import lru_cache
 from typing import Dict, Iterable, List, Optional, Union
 
 import numpy as np
-import torch
 from sentence_transformers import SentenceTransformer
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Configuration
-_DEFAULT_MODEL = os.getenv("EMBEDDING_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2")
+# Configuration - use lightweight model for low-resource systems
+_DEFAULT_MODEL = os.getenv("EMBEDDING_MODEL_NAME", "all-MiniLM-L6-v2")
 
-# Enhanced device detection with GPU model and properties
-_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+# Device detection - CPU-only
+_DEVICE = "cpu"
 _GPU_INFO = {}
+logger.info("Using CPU mode for embeddings")
 
-if _DEVICE == "cuda":
-    try:
-        cuda_id = torch.cuda.current_device()
-        _GPU_INFO = {
-            "name": torch.cuda.get_device_name(cuda_id),
-            "total_memory": torch.cuda.get_device_properties(cuda_id).total_memory / (1024**3),  # GB
-            "cuda_version": torch.version.cuda,
-        }
-        logger.info(f"Using GPU: {_GPU_INFO['name']} with {_GPU_INFO['total_memory']:.2f}GB memory")
-
-        # Favor higher matmul precision on capable GPUs
-        try:
-            torch.set_float32_matmul_precision("high")
-        except Exception:
-            pass
-    except Exception as e:
-        logger.warning(f"Error getting GPU info: {e}")
-
-# Batch size optimization based on GPU memory
+# Batch size optimization for low-resource systems
 def get_optimal_batch_size() -> int:
-    """Determine optimal batch size based on available GPU memory and system RAM"""
+    """Determine optimal batch size based on available system RAM"""
     import psutil
     
-    # Check system RAM first - more conservative with limited system memory
+    # Check system RAM - very conservative for low-resource systems
     system_ram_gb = psutil.virtual_memory().total / (1024**3)
     logger.info(f"System RAM: {system_ram_gb:.2f}GB")
     
-    # Much more conservative batch sizes when system RAM is limited
-    if system_ram_gb < 8:  # Very limited RAM
-        logger.warning("Low system RAM detected, using minimal batch size")
+    # Very conservative batch sizes for low-resource systems
+    if system_ram_gb < 1:  # Extremely limited RAM (< 1GB)
+        logger.warning("Extremely low system RAM detected (< 1GB), using batch size 1")
+        return 1
+    elif system_ram_gb < 2:  # Very limited RAM (1-2GB)
+        logger.warning("Very low system RAM detected (1-2GB), using minimal batch size")
+        return 2
+    elif system_ram_gb < 4:  # Limited RAM (2-4GB)
+        logger.warning("Low system RAM detected, using small batch size")
         return 4
-    elif system_ram_gb < 16:  # Limited RAM (8-16GB)
-        logger.warning("Limited system RAM detected, using conservative batch size")
+    elif system_ram_gb < 8:  # Limited RAM (4-8GB)
+        logger.warning("Low system RAM detected, using small batch size")
         return 8
-    
-    # For GPU, adjust based on available VRAM
-    if _DEVICE != "cuda" or not _GPU_INFO:
-        # CPU mode or unknown GPU - conservative default based on system RAM
-        return min(16, max(8, int(system_ram_gb / 2)))
-    
-    # Estimate based on GPU memory (simple heuristic)
-    gpu_memory_gb = _GPU_INFO.get("total_memory", 0)
-
-    # Prefer large batches on A40-class GPUs (>= 40GB VRAM)
-    if gpu_memory_gb >= 40:
-        return 64
-    # High-end GPU
-    if gpu_memory_gb > 10:
-        return min(32, max(8, int(system_ram_gb / 2)))
-    # Mid-range GPU
-    if gpu_memory_gb > 6:
-        return min(24, max(8, int(system_ram_gb / 2)))
-    # Entry GPU
-    if gpu_memory_gb > 4:
-        return min(16, max(4, int(system_ram_gb / 4)))
-    # Low memory
-    return min(8, max(4, int(system_ram_gb / 4)))
+    elif system_ram_gb < 16:  # Moderate RAM (8-16GB)
+        logger.info("Moderate system RAM detected, using conservative batch size")
+        return 8
+    else:  # 16GB+
+        return min(16, max(8, int(system_ram_gb / 4)))  # Still conservative
 
 # Optimal batch size for current device
 _OPTIMAL_BATCH_SIZE = get_optimal_batch_size()
@@ -111,7 +81,7 @@ def get_gpu_info() -> Dict:
     """Return information about the GPU if available"""
     return _GPU_INFO
 
-def encode_texts(texts: Iterable[str], batch_size: Optional[int] = None) -> torch.Tensor:
+def encode_texts(texts: Iterable[str], batch_size: Optional[int] = None):
     """Encode multiple texts with optimized batch processing
     
     Args:
@@ -125,7 +95,9 @@ def encode_texts(texts: Iterable[str], batch_size: Optional[int] = None) -> torc
     # Convert to list to support generators used multiple times
     text_list: List[str] = list(texts)
     if not text_list:
-        return torch.empty((0, model.get_sentence_embedding_dimension()), device=_DEVICE)
+        # Return numpy array instead of torch tensor for compatibility
+        import numpy as np
+        return np.empty((0, model.get_sentence_embedding_dimension()))
     
     # Use optimal batch size for device if not specified
     actual_batch_size = batch_size or _OPTIMAL_BATCH_SIZE
@@ -135,29 +107,30 @@ def encode_texts(texts: Iterable[str], batch_size: Optional[int] = None) -> torc
         logger.info(f"Encoding {len(text_list)} texts with batch size {actual_batch_size}")
     
     try:
-        with torch.no_grad():
-            embeddings = model.encode(
-                text_list,
-                batch_size=actual_batch_size,
-                convert_to_tensor=True,
-                device=_DEVICE,
-                show_progress_bar=len(text_list) > 100,  # Show progress for large batches
-                normalize_embeddings=True,
-            )
+        # Encode on CPU
+        embeddings = model.encode(
+            text_list,
+            batch_size=actual_batch_size,
+            convert_to_tensor=False,  # Return numpy array for CPU
+            device=_DEVICE,
+            show_progress_bar=len(text_list) > 100,
+            normalize_embeddings=True,
+        )
         return embeddings
     except RuntimeError as e:
-        # Handle out of memory errors gracefully
-        if "CUDA out of memory" in str(e) and batch_size is None:
+        # Handle out of memory errors gracefully (CPU memory)
+        if "out of memory" in str(e).lower() and batch_size is None:
             # Try again with smaller batch size
             reduced_batch = max(1, _OPTIMAL_BATCH_SIZE // 2)
-            logger.warning(f"CUDA OOM error, retrying with reduced batch size {reduced_batch}")
-            torch.cuda.empty_cache()  # Clear GPU memory
+            logger.warning(f"Out of memory error, retrying with reduced batch size {reduced_batch}")
+            import gc
+            gc.collect()  # Clear CPU memory
             return encode_texts(text_list, batch_size=reduced_batch)
         else:
             # If explicit batch size was provided or it's not an OOM error, raise it
             raise
 
-def encode_text(text: str) -> torch.Tensor:
+def encode_text(text: str):
     """Encode a single text
     
     Args:
@@ -196,23 +169,22 @@ def batch_encode_texts(texts: List[str], max_batch_size: Optional[int] = None) -
         if i % (batch_size * 5) == 0 and i > 0:
             logger.info(f"Processed {i}/{len(texts)} embeddings")
             
-        # Generate embeddings for this batch
-        with torch.no_grad():
-            batch_embeddings = model.encode(
-                batch,
-                batch_size=batch_size,
-                convert_to_tensor=True,
-                device=_DEVICE,
-                show_progress_bar=False,
-                normalize_embeddings=True
-            )
+        # Generate embeddings for this batch (CPU-only)
+        batch_embeddings = model.encode(
+            batch,
+            batch_size=batch_size,
+            convert_to_tensor=False,
+            device=_DEVICE,
+            show_progress_bar=False,
+            normalize_embeddings=True
+        )
         
-        # Move to CPU and store in results array
-        all_embeddings[i:i+len(batch)] = batch_embeddings.cpu().numpy()
+        # Store in results array
+        all_embeddings[i:i+len(batch)] = batch_embeddings
         
-        # Clear GPU memory if using CUDA
-        if _DEVICE == "cuda":
-            del batch_embeddings
-            torch.cuda.empty_cache()
+        # Clear memory
+        del batch_embeddings
+        import gc
+        gc.collect()
     
     return all_embeddings

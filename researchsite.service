@@ -5,12 +5,13 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/ResearchBuddy
+WorkingDirectory=/home/ubuntu/researchsite
 Environment=PORT=80
-Environment=PYTHONPATH=/ResearchBuddy
+Environment=PYTHONPATH=/home/ubuntu/researchsite
 Environment=HF_HOME=/tmp/hf_cache
 Environment=TRANSFORMERS_CACHE=/tmp/hf_cache
-ExecStart=/ResearchBuddy/start.sh
+EnvironmentFile=/home/ubuntu/researchsite/.env
+ExecStart=/home/ubuntu/researchsite/start.sh
 Restart=always
 RestartSec=10
 

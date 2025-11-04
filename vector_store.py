@@ -74,8 +74,14 @@ class VectorStore:
         try:
             import psutil
             system_ram_gb = psutil.virtual_memory().total / (1024**3)
-            # Adjust batch size based on available RAM
-            if system_ram_gb < 8:  # Very constrained system
+            # Adjust batch size based on available RAM - very conservative for 1GB systems
+            if system_ram_gb < 1:  # Extremely constrained (< 1GB)
+                batch_size = min(batch_size, 1)
+            elif system_ram_gb < 2:  # Very constrained (1-2GB)
+                batch_size = min(batch_size, 2)
+            elif system_ram_gb < 4:  # Very constrained (2-4GB)
+                batch_size = min(batch_size, 4)
+            elif system_ram_gb < 8:  # Constrained (4-8GB)
                 batch_size = min(batch_size, 8)
             elif system_ram_gb < 16:  # 8-16GB RAM
                 batch_size = min(batch_size, 16)

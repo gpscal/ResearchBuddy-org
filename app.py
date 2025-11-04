@@ -112,7 +112,7 @@ def upload_pdf_page():
 def rag_query():
     payload = request.get_json(force=True)
     question = payload.get("question", "").strip()
-    provider = payload.get("provider", "anthropic")  # Default to anthropic, support 'qwenvl'
+    provider = payload.get("provider", "anthropic")  # Only anthropic supported
     stream = bool(payload.get("stream", True))
     use_training_data = bool(payload.get("use_training_data", True))  # Default to True
     use_web = bool(payload.get("use_web", False))  # Default to False
@@ -122,8 +122,8 @@ def rag_query():
         return jsonify({"error": "Question is required"}), 400
     
     # Validate provider
-    if provider not in ['anthropic', 'qwenvl']:
-        return jsonify({"error": f"Invalid provider: {provider}. Must be 'anthropic' or 'qwenvl'"}), 400
+    if provider != 'anthropic':
+        return jsonify({"error": f"Invalid provider: {provider}. Only 'anthropic' is supported."}), 400
 
     if not stream:
         result = langchain_service.query(
@@ -307,7 +307,7 @@ def get_llm_providers():
     providers = []
     
     # Check which providers are available
-    from langchain_service import _anthropic_llm, get_qwenvl
+    from langchain_service import _anthropic_llm
     
     if _anthropic_llm is not None:
         providers.append({
@@ -315,23 +315,6 @@ def get_llm_providers():
             "name": "Anthropic Claude",
             "model": os.getenv("ANTHROPIC_MODEL", "claude-3-haiku-20240307"),
             "available": True
-        })
-    
-    # Check if QwenVL can be loaded
-    try:
-        providers.append({
-            "id": "qwenvl",
-            "name": "Qwen2.5-VL-32B-Instruct",
-            "model": os.getenv("QWENVL_MODEL", "Qwen/Qwen2.5-VL-32B-Instruct"),
-            "available": True
-        })
-    except Exception as e:
-        providers.append({
-            "id": "qwenvl",
-            "name": "Qwen2.5-VL-32B-Instruct",
-            "model": os.getenv("QWENVL_MODEL", "Qwen/Qwen2.5-VL-32B-Instruct"),
-            "available": False,
-            "error": str(e)
         })
     
     return jsonify({
@@ -344,11 +327,9 @@ def get_llm_providers():
 def health_check():
     search_stats = search.get_stats()
     
-    # Get GPU information if available
-    gpu_info = {}
+    # Get embedding device information (CPU-only)
     try:
-        from embedding_manager import get_gpu_info, embedding_device
-        gpu_info = get_gpu_info()
+        from embedding_manager import embedding_device
         embedding_dev = embedding_device()
     except ImportError:
         embedding_dev = "unknown"
@@ -363,7 +344,6 @@ def health_check():
         "notes_service": NOTES_SERVICE_AVAILABLE,
         "code_indexer": CODE_INDEXER_AVAILABLE,
         "embedding_device": embedding_dev,
-        "gpu_info": gpu_info,
         "platform": platform.platform(),
     })
 

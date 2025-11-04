@@ -128,18 +128,10 @@ class RAGService:
         print("✓ RAG Service initialized")
     
     def _get_embedder(self):
-        """Get or create embedder (local only)"""
+        """Get or create embedder (local only, CPU-only)"""
         if self._embedder is None:
-            # Prefer a stronger model on high-VRAM GPUs
-            try:
-                import torch
-                if torch.cuda.is_available() and torch.cuda.get_device_properties(0).total_memory > (40 * 1024 * 1024 * 1024):
-                    model_name = self.config.get("EMBED_MODEL_LOCAL", "sentence-transformers/all-mpnet-base-v2")
-                else:
-                    model_name = self.config.get("EMBED_MODEL_LOCAL", "all-MiniLM-L6-v2")
-            except Exception:
-                model_name = self.config.get("EMBED_MODEL_LOCAL", "all-MiniLM-L6-v2")
-
+            # Use lightweight model for CPU-only systems
+            model_name = self.config.get("EMBED_MODEL_LOCAL", "all-MiniLM-L6-v2")
             self._embedder = LocalEmbedder(model_name)
         return self._embedder
     
@@ -151,22 +143,10 @@ class RAGService:
         # Determine which LLM to use
         provider = override_provider or os.getenv("LLM_PROVIDER", "anthropic")
         
-        if provider == "qwenvl":
-            try:
-                from research_llm import QwenVLLL
-                model_name = os.getenv("QWENVL_MODEL", DEFAULTS.get("QWENVL_MODEL", "Qwen/Qwen2.5-VL-32B-Instruct"))
-                self._llm = QwenVLLL(model_name=model_name)
-                print(f"INFO: Using QwenVL: {model_name}")
-            except Exception as e:
-                print(f"ERROR: Failed to load QwenVL, falling back to Anthropic: {e}")
-                model_name = os.getenv("ANTHROPIC_MODEL", DEFAULTS.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"))
-                self._llm = AnthropicLLM(model_name=model_name)
-                print(f"INFO: Using Anthropic LLM (fallback): {model_name}")
-        else:
-            # Default to Anthropic
-            model_name = os.getenv("ANTHROPIC_MODEL", DEFAULTS.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"))
-            self._llm = AnthropicLLM(model_name=model_name)
-            print(f"INFO: Using Anthropic LLM: {model_name}")
+        # Only Anthropic is supported
+        model_name = os.getenv("ANTHROPIC_MODEL", DEFAULTS.get("ANTHROPIC_MODEL", "claude-3-haiku-20240307"))
+        self._llm = AnthropicLLM(model_name=model_name)
+        print(f"INFO: Using Anthropic LLM: {model_name}")
         
         return self._llm
 
@@ -240,22 +220,19 @@ class RAGService:
             
             print(f"INFO: Found {len(all_conversations)} conversations to search")
             
-            # Get embedder with error handling for CUDA issues
+            # Get embedder with error handling
             try:
                 embedder = self._get_embedder()
                 query_embedding = embedder.embed_query(question)
             except Exception as embed_error:
                 print(f"ERROR: Failed to generate query embedding: {embed_error}")
-                # Try to clear CUDA cache if available
+                # Try to clear memory and retry
                 try:
-                    import torch
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                        print("INFO: Cleared CUDA cache, retrying embedding...")
-                        embedder = self._get_embedder()
-                        query_embedding = embedder.embed_query(question)
-                    else:
-                        raise
+                    import gc
+                    gc.collect()
+                    print("INFO: Cleared memory cache, retrying embedding...")
+                    embedder = self._get_embedder()
+                    query_embedding = embedder.embed_query(question)
                 except Exception as retry_error:
                     print(f"ERROR: Retry failed: {retry_error}")
                     print("WARNING: Conversation history search disabled due to embedding errors")
@@ -295,15 +272,12 @@ class RAGService:
                 conv_embeddings = embedder.embed_documents(conv_texts)
             except Exception as embed_error:
                 print(f"ERROR: Failed to embed conversation texts: {embed_error}")
-                # Try to clear CUDA cache and retry
+                # Try to clear memory and retry
                 try:
-                    import torch
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                        print("INFO: Cleared CUDA cache, retrying conversation embeddings...")
-                        conv_embeddings = embedder.embed_documents(conv_texts)
-                    else:
-                        raise
+                    import gc
+                    gc.collect()
+                    print("INFO: Cleared memory cache, retrying conversation embeddings...")
+                    conv_embeddings = embedder.embed_documents(conv_texts)
                 except Exception as retry_error:
                     print(f"ERROR: Retry failed: {retry_error}")
                     print("WARNING: Conversation history search disabled due to embedding errors")
